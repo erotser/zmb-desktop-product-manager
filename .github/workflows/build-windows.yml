@@ -1,0 +1,41 @@
+name: Build Windows executable
+
+# Builds a real Windows .exe on GitHub's hosted Windows runner. Nothing
+# needs to be installed on your own machine -- push a commit (or trigger
+# this manually) and download the .exe from the workflow run's "Artifacts"
+# section when it finishes.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: pytest tests/ -v
+
+      - name: Build executable
+        run: pyinstaller build.spec
+
+      - name: Upload executable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ZombeeProductManager-windows
+          path: dist/ZombeeProductManager.exe
+          retention-days: 30
