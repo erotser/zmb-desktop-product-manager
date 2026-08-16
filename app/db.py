@@ -266,3 +266,14 @@ class Database:
     def delete_product_by_sku(self, sku: str):
         with self.conn:
             self.conn.execute("DELETE FROM products WHERE sku = ?", (sku,))
+
+    def count_products(self) -> int:
+        row = self.conn.execute("SELECT COUNT(*) AS c FROM products").fetchone()
+        return row["c"]
+
+    def clear_all(self):
+        """Deletes every product. Child rows (gallery images, attributes,
+        variations, custom fields) cascade automatically via the foreign
+        key ON DELETE CASCADE constraints set up in the schema."""
+        with self.conn:
+            self.conn.execute("DELETE FROM products")

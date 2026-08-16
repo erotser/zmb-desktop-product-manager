@@ -21,6 +21,7 @@ a = Analysis(
     binaries=[],
     datas=[
         (str(app_root / 'app' / 'locales'), 'app/locales'),
+        (str(app_root / 'app' / 'assets'), 'app/assets'),
     ],
     hiddenimports=[],
     hookspath=[],

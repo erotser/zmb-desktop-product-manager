@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtWidgets import (
-    QFileDialog, QLabel, QMainWindow, QMessageBox, QSplitter, QStackedWidget, QWidget,
+    QFileDialog, QInputDialog, QLabel, QMainWindow, QMessageBox, QSplitter, QStackedWidget, QWidget,
 )
 from PySide6.QtCore import Qt
 
@@ -82,6 +82,10 @@ class MainWindow(QMainWindow):
         settings_action = file_menu.addAction(t("nav.settings"))
         settings_action.triggered.connect(self._on_open_settings)
 
+        file_menu.addSeparator()
+        clear_all_action = file_menu.addAction(t("products.clear_all"))
+        clear_all_action.triggered.connect(self._on_clear_all)
+
     # ------------------------------------------------------------------ #
     # List / navigation
     # ------------------------------------------------------------------ #
@@ -125,6 +129,27 @@ class MainWindow(QMainWindow):
             self._refresh_list()
             self._show_placeholder()
 
+    def _on_clear_all(self):
+        count = self.db.count_products()
+        if count == 0:
+            QMessageBox.information(self, t("products.clear_all"), t("products.clear_all_empty"))
+            return
+
+        text, ok = QInputDialog.getText(
+            self, t("products.clear_all"),
+            t("products.clear_all_confirm_prompt", count=count),
+        )
+        if not ok:
+            return
+        if text.strip().upper() != "DELETE":
+            QMessageBox.information(self, t("products.clear_all"), t("products.clear_all_cancelled"))
+            return
+
+        self.db.clear_all()
+        self._refresh_list()
+        self._show_placeholder()
+        QMessageBox.information(self, t("products.clear_all"), t("products.clear_all_done", count=count))
+
     def _on_form_saved(self, product: Product):
         try:
             self.db.save_product(product)
@@ -147,18 +172,32 @@ class MainWindow(QMainWindow):
         except csv_io.CsvFormatError as e:
             QMessageBox.critical(self, t("common.error"), str(e))
             return
+        except Exception as e:  # noqa: BLE001 -- any unexpected parsing failure should be visible, not silent
+            QMessageBox.critical(
+                self, t("common.error"),
+                f"Could not read this CSV file:\n\n{type(e).__name__}: {e}",
+            )
+            return
 
+        save_errors = []
+        saved_count = 0
         for product in products:
-            self.db.save_product(product)
+            try:
+                self.db.save_product(product)
+                saved_count += 1
+            except ValueError as e:
+                save_errors.append(f"{product.sku or '(no SKU)'}: {e}")
+
         self._refresh_list()
 
-        if warnings:
+        all_issues = list(warnings) + save_errors
+        if all_issues:
             QMessageBox.warning(
                 self, t("csv.import_warnings_title"),
-                t("csv.import_success", count=len(products)) + "\n\n" + "\n".join(warnings),
+                t("csv.import_success", count=saved_count) + "\n\n" + "\n".join(all_issues),
             )
         else:
-            QMessageBox.information(self, t("common.ok"), t("csv.import_success", count=len(products)))
+            QMessageBox.information(self, t("common.ok"), t("csv.import_success", count=saved_count))
 
     def _on_export_csv(self):
         products = self.db.list_products()

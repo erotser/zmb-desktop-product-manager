@@ -183,6 +183,59 @@ def test_image_ref_preserved_when_not_reexported(tmp_path):
     assert rows[0]["product_image"] == "https://example.com/tee.jpg"
 
 
+def test_variation_sku_matching_parent_is_skipped_not_whole_product(tmp_path):
+    """A single bad variation row (SKU identical to its own parent) should be
+    dropped with a warning, while the product's other valid variations still
+    import -- matching the plugin's per-row leniency instead of rejecting
+    the entire product."""
+    csv_path = tmp_path / "test.csv"
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv_module.writer(f)
+        writer.writerow(["parent_sku", "product_type", "product_name", "variation_sku", "variation_price"])
+        writer.writerow(["CO5001", "variable", "Bauble", "CO5001", "45"])       # bad: matches parent
+        writer.writerow(["CO5001", "variable", "Bauble", "CO5001-GOOD", "15"])  # good
+
+    products, warnings = csv_io.import_from_csv(csv_path)
+    assert len(products) == 1
+    assert len(products[0].variations) == 1
+    assert products[0].variations[0].sku == "CO5001-GOOD"
+    assert len(warnings) == 1
+    assert "identical to its own parent_sku" in warnings[0]
+
+
+def test_duplicate_variation_sku_within_product_is_skipped(tmp_path):
+    csv_path = tmp_path / "test.csv"
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv_module.writer(f)
+        writer.writerow(["parent_sku", "product_type", "product_name", "variation_sku", "variation_price"])
+        writer.writerow(["X-001", "variable", "X", "X-001-A", "10"])
+        writer.writerow(["X-001", "variable", "X", "X-001-A", "12"])  # duplicate of the row above
+
+    products, warnings = csv_io.import_from_csv(csv_path)
+    assert len(products[0].variations) == 1
+    assert len(warnings) == 1
+    assert "duplicate variation_sku" in warnings[0]
+
+
+def test_product_with_only_colliding_variations_fails_validation_cleanly(tmp_path):
+    """If every variation row for a product collides (all skipped), the
+    resulting product correctly has zero variations and should fail
+    Product.validate() with a clear message -- this is a real data problem
+    on the source site (non-unique SKUs) that can't be safely auto-fixed."""
+    csv_path = tmp_path / "test.csv"
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv_module.writer(f)
+        writer.writerow(["parent_sku", "product_type", "product_name", "variation_sku", "variation_price"])
+        writer.writerow(["CO5001", "variable", "Bauble", "CO5001", "45"])
+        writer.writerow(["CO5001", "variable", "Bauble", "CO5001", "15"])
+
+    products, warnings = csv_io.import_from_csv(csv_path)
+    assert len(products) == 1
+    assert len(products[0].variations) == 0
+    errors = products[0].validate()
+    assert any("at least one variation" in e for e in errors)
+
+
 def test_mismatched_product_type_across_rows_is_skipped(tmp_path):
     csv_path = tmp_path / "mixed.csv"
     with open(csv_path, "w", newline="", encoding="utf-8") as f:

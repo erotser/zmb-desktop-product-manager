@@ -7,9 +7,12 @@ workflow:
   - A NEW local file the user just picked in this app (has a thumbnail,
     will be compressed/renamed on export).
   - An EXISTING reference from an earlier CSV import (a URL or filename
-    already on the site) -- shown as text, not a thumbnail, since the app
-    has no local copy of it to preview. Replacing it with a new local file
-    overrides it; leaving it alone preserves it on export.
+    already on the site) -- shown as text by default, since the app has no
+    local copy to preview. A "Download" button (shown only when the
+    reference is an actual URL) fetches it so it can be previewed and,
+    if the user picks a replacement, edited. Leaving it alone (not
+    downloading, not replacing) still preserves the original reference on
+    export -- downloading is purely for preview/editing convenience.
 """
 
 from __future__ import annotations
@@ -20,13 +23,24 @@ from typing import Optional
 from PySide6.QtCore import Signal, Qt
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
-    QFileDialog, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget,
+    QFileDialog, QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPushButton, QVBoxLayout, QWidget,
 )
 
 from ..i18n import t
+from ..image_downloader import ImageDownloadError, download_image, is_downloadable_url
 
 THUMBNAIL_SIZE = 96
 IMAGE_FILE_FILTER = "Images (*.jpg *.jpeg *.png *.webp *.bmp *.tif *.tiff *.gif)"
+
+# Set by the application at startup (see main.py) to a folder under the
+# user's config directory. Module-level so every ImagePickerWidget instance
+# shares one cache without needing it threaded through every constructor.
+_download_cache_dir: Optional[str] = None
+
+
+def set_download_cache_dir(path: str):
+    global _download_cache_dir
+    _download_cache_dir = path
 
 
 class ImagePickerWidget(QWidget):
@@ -59,6 +73,11 @@ class ImagePickerWidget(QWidget):
         self.choose_button = QPushButton(t("product_form.choose_image"))
         self.choose_button.clicked.connect(self._on_choose_clicked)
         button_row.addWidget(self.choose_button)
+
+        self.download_button = QPushButton(t("image_picker.download"))
+        self.download_button.clicked.connect(self._on_download_clicked)
+        self.download_button.hide()
+        button_row.addWidget(self.download_button)
 
         self.clear_button = QPushButton(t("common.clear"))
         self.clear_button.clicked.connect(self._on_clear_clicked)
@@ -108,6 +127,28 @@ class ImagePickerWidget(QWidget):
             self._refresh_display()
             self.changed.emit()
 
+    def _on_download_clicked(self):
+        if not self._existing_ref or not _download_cache_dir:
+            return
+        self.download_button.setEnabled(False)
+        self.download_button.setText(t("image_picker.downloading"))
+        try:
+            local_path = download_image(self._existing_ref, _download_cache_dir)
+        except ImageDownloadError as e:
+            QMessageBox.warning(self, t("common.warning"), str(e))
+            return
+        finally:
+            self.download_button.setEnabled(True)
+            self.download_button.setText(t("image_picker.download"))
+
+        # Downloading fills in a local, previewable copy but keeps the
+        # original reference too (harmless -- get_local_path() takes
+        # priority on export, so this doesn't change what gets exported,
+        # it just makes the image visible/editable now).
+        self._local_path = local_path
+        self._refresh_display()
+        self.changed.emit()
+
     def _on_clear_clicked(self):
         self._local_path = None
         self._existing_ref = None
@@ -125,11 +166,14 @@ class ImagePickerWidget(QWidget):
             else:
                 self.thumbnail_label.setText(t("image_picker.preview_unavailable"))
             self.status_label.setText(Path(self._local_path).name)
+            self.download_button.hide()
         elif self._existing_ref:
             self.thumbnail_label.clear()
             self.thumbnail_label.setText(t("image_picker.no_preview"))
             self.status_label.setText(t("image_picker.existing_image", ref=self._existing_ref))
+            self.download_button.setVisible(is_downloadable_url(self._existing_ref))
         else:
             self.thumbnail_label.clear()
             self.thumbnail_label.setText(t("image_picker.no_preview"))
             self.status_label.setText(t("image_picker.no_image"))
+            self.download_button.hide()

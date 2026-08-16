@@ -310,6 +310,21 @@ def import_from_csv(csv_path: str | Path) -> tuple[list[Product], list[str]]:
                 warnings.append(f'Row {row_number} ({parent_sku}) skipped: simple products only use one row.')
                 continue
 
+            if product_type == "variable":
+                if var_sku == parent_sku:
+                    warnings.append(
+                        f'Row {row_number} ({parent_sku}): variation_sku is identical to its own parent_sku -- '
+                        f'this row was skipped, the rest of the product was still imported.'
+                    )
+                    continue
+                if var_sku in groups[parent_sku].setdefault("seen_variation_skus", set()):
+                    warnings.append(
+                        f'Row {row_number} ({parent_sku}): duplicate variation_sku "{var_sku}" within this '
+                        f'product -- this row was skipped, the rest of the product was still imported.'
+                    )
+                    continue
+                groups[parent_sku]["seen_variation_skus"].add(var_sku)
+
             for col in ("product_name", "product_description", "product_short_description",
                         "product_categories", "product_tags", "product_image", "product_image_alt",
                         "product_gallery_images", "product_gallery_images_alt"):

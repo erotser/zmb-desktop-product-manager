@@ -105,6 +105,75 @@ def test_delete_product_removes_it_from_list(window, qtbot, monkeypatch):
     assert window.product_list.table.rowCount() == 0
 
 
+def test_import_with_one_bad_row_still_saves_and_shows_the_good_ones(window, qtbot, tmp_path, monkeypatch):
+    """
+    Regression test: previously, if one product in a CSV failed
+    Database.save_product()'s validation (e.g. a variation SKU identical to
+    its own parent SKU -- valid enough to have made it past CSV parsing,
+    but rejected by the stricter app-level validation), the save loop
+    raised uncaught, aborting before the product list ever refreshed. Every
+    earlier product in the file was silently saved to the database but
+    never shown until some unrelated action triggered a refresh.
+    """
+    import csv as csv_module
+
+    csv_path = tmp_path / "mixed.csv"
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv_module.writer(f)
+        writer.writerow(["parent_sku", "product_type", "product_name", "variation_sku", "variation_price"])
+        # A valid product first.
+        writer.writerow(["GOOD-001", "simple", "Good Product", "", "10.00"])
+        # A second product whose variation SKU equals its own parent SKU --
+        # passes CSV-level parsing (both fields non-empty) but fails the
+        # app's stricter Product.validate().
+        writer.writerow(["BAD-001", "variable", "Bad Product", "BAD-001", "5.00"])
+
+    from PySide6.QtWidgets import QFileDialog, QMessageBox
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", staticmethod(lambda *a, **kw: (str(csv_path), "")))
+    monkeypatch.setattr(QMessageBox, "warning", staticmethod(lambda *a, **kw: None))
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **kw: None))
+
+    window._on_import_csv()
+
+    # The good product must be saved AND the list must reflect it immediately.
+    products = window.db.list_products()
+    skus = {p.sku for p in products}
+    assert "GOOD-001" in skus
+
+    assert window.product_list.table.rowCount() == len(products)
+    displayed_skus = {window.product_list.table.item(r, 1).text() for r in range(window.product_list.table.rowCount())}
+    assert "GOOD-001" in displayed_skus
+
+
+def test_clear_all_via_menu_requires_typing_delete(window, qtbot, monkeypatch):
+    window._on_add_simple()
+    window.simple_form.sku_input.setText("X-001")
+    window.simple_form.name_input.setText("X")
+    window.simple_form.price_input.setText("5")
+    with qtbot.waitSignal(window.simple_form.saved, timeout=1000):
+        window.simple_form._on_save_clicked()
+    assert window.db.count_products() == 1
+
+    from PySide6.QtWidgets import QInputDialog, QMessageBox
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **kw: None))
+
+    # Wrong confirmation text -- nothing should be deleted.
+    monkeypatch.setattr(QInputDialog, "getText", staticmethod(lambda *a, **kw: ("nope", True)))
+    window._on_clear_all()
+    assert window.db.count_products() == 1
+
+    # User cancels the dialog entirely -- nothing deleted.
+    monkeypatch.setattr(QInputDialog, "getText", staticmethod(lambda *a, **kw: ("DELETE", False)))
+    window._on_clear_all()
+    assert window.db.count_products() == 1
+
+    # Correct confirmation -- everything is deleted and the list refreshes.
+    monkeypatch.setattr(QInputDialog, "getText", staticmethod(lambda *a, **kw: ("DELETE", True)))
+    window._on_clear_all()
+    assert window.db.count_products() == 0
+    assert window.product_list.table.rowCount() == 0
+
+
 def test_full_export_then_import_cycle(window, qtbot, tmp_path, monkeypatch):
     # Save one simple and one variable product.
     window._on_add_simple()

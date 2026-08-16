@@ -112,3 +112,26 @@ def test_gallery_image_ref_persists(db):
     reloaded = db.get_product_by_sku("MUG-001")
     assert reloaded.gallery[0].image_ref == "https://example.com/mug.jpg"
     assert reloaded.gallery[0].path is None
+
+
+def test_clear_all_removes_everything_including_children(db):
+    p1 = Product(sku="A", product_type="simple", name="A", price="1",
+                 custom_fields=[CustomField(name="x", value="y")])
+    p2 = Product(sku="B", product_type="variable", name="B",
+                 variations=[Variation(sku="B-1", price="5")])
+    db.save_product(p1)
+    db.save_product(p2)
+    assert db.count_products() == 2
+
+    db.clear_all()
+
+    assert db.count_products() == 0
+    assert db.list_products() == []
+    # Cascade check: no orphaned child rows left behind.
+    assert db.conn.execute("SELECT COUNT(*) AS c FROM custom_fields").fetchone()["c"] == 0
+    assert db.conn.execute("SELECT COUNT(*) AS c FROM variations").fetchone()["c"] == 0
+
+
+def test_clear_all_on_empty_database_is_a_no_op(db):
+    db.clear_all()  # must not raise
+    assert db.count_products() == 0
