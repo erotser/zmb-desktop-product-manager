@@ -174,6 +174,48 @@ def test_clear_all_via_menu_requires_typing_delete(window, qtbot, monkeypatch):
     assert window.product_list.table.rowCount() == 0
 
 
+def test_clicking_a_list_row_previews_it_without_clicking_edit(window, qtbot):
+    """QOL: selecting a row in the list should load it into the form
+    immediately, without requiring a separate click on the Edit button."""
+    window._on_add_simple()
+    window.simple_form.sku_input.setText("X-001")
+    window.simple_form.name_input.setText("Preview Me")
+    window.simple_form.price_input.setText("5")
+    with qtbot.waitSignal(window.simple_form.saved, timeout=1000):
+        window.simple_form._on_save_clicked()
+
+    # Move off the form so we can confirm selecting the row is what brings it back.
+    window._show_placeholder()
+    assert window.form_stack.currentWidget() is window.placeholder
+
+    # Simulate an actual row click by selecting the row in the table --
+    # this exercises the real itemSelectionChanged -> selection_changed
+    # signal path, not just calling the handler function directly.
+    window.product_list.table.selectRow(0)
+
+    assert window.form_stack.currentWidget() is window.simple_form
+    assert window.simple_form.sku_input.text() == "X-001"
+
+
+def test_clicking_a_variable_product_row_previews_correct_form(window, qtbot):
+    window._on_add_variable()
+    window.variable_form.sku_input.setText("TSHIRT-001")
+    window.variable_form.name_input.setText("Tee")
+    window.variable_form.attribute_editor.add_row("Color", ["Red"])
+    window.variable_form.variation_table.generate_from_attributes(
+        window.variable_form.attribute_editor.get_attributes()
+    )
+    window.variable_form.variation_table.get_variations()[0].price = "10"
+    with qtbot.waitSignal(window.variable_form.saved, timeout=1000):
+        window.variable_form._on_save_clicked()
+
+    window._show_placeholder()
+    window.product_list.table.selectRow(0)
+
+    assert window.form_stack.currentWidget() is window.variable_form
+    assert window.variable_form.sku_input.text() == "TSHIRT-001"
+
+
 def test_full_export_then_import_cycle(window, qtbot, tmp_path, monkeypatch):
     # Save one simple and one variable product.
     window._on_add_simple()

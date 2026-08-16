@@ -38,6 +38,7 @@ class MainWindow(QMainWindow):
         self.product_list.add_simple_requested.connect(self._on_add_simple)
         self.product_list.add_variable_requested.connect(self._on_add_variable)
         self.product_list.edit_requested.connect(self._on_edit)
+        self.product_list.selection_changed.connect(self._on_list_selection_changed)
         self.product_list.delete_requested.connect(self._on_delete)
         splitter.addWidget(self.product_list)
 
@@ -114,6 +115,12 @@ class MainWindow(QMainWindow):
         else:
             self.variable_form.load_product(product)
             self.form_stack.setCurrentWidget(self.variable_form)
+
+    def _on_list_selection_changed(self, product_id):
+        # Fires on every click in the list, not just the explicit "Edit"
+        # button -- selecting a row immediately previews it in the form.
+        if product_id is not None:
+            self._on_edit(product_id)
 
     def _on_delete(self, product_id: int):
         product = self.db.get_product(product_id)
