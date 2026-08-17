@@ -413,6 +413,25 @@ def test_factory_reset_clears_products_credential_and_site_settings(window, qtbo
     assert reloaded.site_username == ""
 
 
+def test_window_title_shows_current_version(window):
+    from app import __version__
+    assert __version__ in window.windowTitle()
+
+
+def test_about_dialog_shows_current_version(window, monkeypatch):
+    from app import __version__
+    from PySide6.QtWidgets import QMessageBox
+
+    shown = []
+    monkeypatch.setattr(QMessageBox, "about", staticmethod(lambda *a: shown.append(a)))
+
+    window._on_about()
+
+    assert len(shown) == 1
+    about_body = shown[0][2]  # QMessageBox.about(parent, title, text) -- text is 3rd arg
+    assert __version__ in about_body
+
+
 def test_full_export_then_import_cycle(window, qtbot, tmp_path, monkeypatch):
     # Save one simple and one variable product.
     window._on_add_simple()

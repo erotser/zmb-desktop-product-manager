@@ -12,6 +12,7 @@ from PySide6.QtCore import Qt
 
 from .. import credential_store
 from .. import csv_io
+from .. import __version__
 from ..db import Database
 from ..i18n import t
 from ..image_manager import ImageExporter
@@ -31,7 +32,7 @@ class MainWindow(QMainWindow):
         self.settings_store = settings_store
         self.settings = settings
 
-        self.setWindowTitle(t("app.title"))
+        self.setWindowTitle(f'{t("app.title")} v{__version__}')
         self.resize(1200, 800)
 
         splitter = QSplitter(Qt.Horizontal)
@@ -94,6 +95,10 @@ class MainWindow(QMainWindow):
 
         factory_reset_action = file_menu.addAction(t("app.factory_reset"))
         factory_reset_action.triggered.connect(self._on_factory_reset)
+
+        help_menu = self.menuBar().addMenu(t("nav.help"))
+        about_action = help_menu.addAction(t("app.about_menu_item"))
+        about_action.triggered.connect(self._on_about)
 
     # ------------------------------------------------------------------ #
     # List / navigation
@@ -185,6 +190,9 @@ class MainWindow(QMainWindow):
         self._refresh_list()
         self._show_placeholder()
         QMessageBox.information(self, t("app.factory_reset"), t("app.factory_reset_done"))
+
+    def _on_about(self):
+        QMessageBox.about(self, t("app.about_title"), t("app.about_body", version=__version__))
 
     def _on_form_saved(self, product: Product):
         try:

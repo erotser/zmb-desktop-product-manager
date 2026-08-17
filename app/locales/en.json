@@ -3,6 +3,11 @@
 
   "nav.products": "Products",
   "nav.settings": "Settings",
+  "nav.help": "Help",
+
+  "app.about_menu_item": "About Zombee Product Manager",
+  "app.about_title": "About",
+  "app.about_body": "Zombee Product Manager Desktop\nVersion {version}\n\nA companion app for the Zombee Product Manager WordPress plugin.",
 
   "products.list_title": "Products",
   "products.add_simple": "Add Simple Product",
