@@ -36,6 +36,11 @@ class AppSettings:
     compression_quality: int = 82
     compression_max_dimension: int = 2000
     language: str = "en"
+    site_url: str = ""
+    site_username: str = ""
+    # The application password itself is NOT stored here -- it lives in the
+    # OS credential store via credential_store.py, never in this plaintext
+    # settings file.
 
     def compression_settings(self) -> CompressionSettings:
         return CompressionSettings(

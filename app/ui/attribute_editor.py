@@ -60,6 +60,7 @@ class AttributeEditorWidget(QWidget):
         self.layout_.setContentsMargins(0, 0, 0, 0)
 
         self.rows_container = QVBoxLayout()
+        self.rows_container.setSpacing(8)
         self.layout_.addLayout(self.rows_container)
 
         add_button = QPushButton(t("product_form.add_attribute"))

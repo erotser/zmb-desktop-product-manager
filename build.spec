@@ -23,7 +23,14 @@ a = Analysis(
         (str(app_root / 'app' / 'locales'), 'app/locales'),
         (str(app_root / 'app' / 'assets'), 'app/assets'),
     ],
-    hiddenimports=[],
+    hiddenimports=[
+        # keyring discovers its backend at runtime via setuptools entry
+        # points, which PyInstaller's static analysis doesn't reliably
+        # follow -- without this, a frozen build can fail to find any
+        # credential-store backend on Windows even though it works fine
+        # running from source. Pinning it explicitly avoids that.
+        'keyring.backends.Windows',
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

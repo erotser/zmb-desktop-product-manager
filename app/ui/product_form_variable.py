@@ -21,19 +21,28 @@ from .variation_table import VariationTableWidget
 
 class VariableProductForm(QWidget):
     saved = Signal(object)
+    sync_requested = Signal(object)
     cancelled = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
 
         outer = QVBoxLayout(self)
+        outer.setContentsMargins(16, 16, 16, 16)
+        outer.setSpacing(16)
+
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
         outer.addWidget(scroll)
 
         content = QWidget()
         scroll.setWidget(content)
         form = QFormLayout(content)
+        form.setContentsMargins(20, 20, 20, 20)
+        form.setHorizontalSpacing(16)
+        form.setVerticalSpacing(14)
+        form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
 
         self.name_input = QLineEdit()
         self.name_input.textChanged.connect(self._on_sku_or_name_changed)
@@ -83,9 +92,15 @@ class VariableProductForm(QWidget):
         form.addRow(self.error_label)
 
         button_row = QHBoxLayout()
+        button_row.setSpacing(10)
         self.save_button = QPushButton(t("product_form.save"))
         self.save_button.clicked.connect(self._on_save_clicked)
         button_row.addWidget(self.save_button)
+
+        self.sync_button = QPushButton(t("product_form.save_and_sync"))
+        self.sync_button.setToolTip(t("product_form.save_and_sync_tooltip"))
+        self.sync_button.clicked.connect(self._on_sync_clicked)
+        button_row.addWidget(self.sync_button)
 
         self.cancel_button = QPushButton(t("product_form.cancel"))
         self.cancel_button.clicked.connect(self.cancelled.emit)
@@ -143,11 +158,21 @@ class VariableProductForm(QWidget):
         )
 
     def _on_save_clicked(self):
+        product = self._validate_and_build()
+        if product:
+            self.saved.emit(product)
+
+    def _on_sync_clicked(self):
+        product = self._validate_and_build()
+        if product:
+            self.sync_requested.emit(product)
+
+    def _validate_and_build(self) -> Product | None:
         product = self._build_product()
         errors = product.validate()
         if errors:
             self.error_label.setText("\n".join(errors))
             self.error_label.show()
-            return
+            return None
         self.error_label.hide()
-        self.saved.emit(product)
+        return product

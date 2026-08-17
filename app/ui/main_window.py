@@ -5,16 +5,19 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtWidgets import (
-    QFileDialog, QInputDialog, QLabel, QMainWindow, QMessageBox, QSplitter, QStackedWidget, QWidget,
+    QApplication, QFileDialog, QInputDialog, QLabel, QMainWindow, QMessageBox,
+    QSplitter, QStackedWidget, QWidget,
 )
 from PySide6.QtCore import Qt
 
+from .. import credential_store
 from .. import csv_io
 from ..db import Database
 from ..i18n import t
 from ..image_manager import ImageExporter
 from ..models import Product
 from ..settings import AppSettings, SettingsStore
+from ..site_sync import SiteConnection, SiteSyncError, sync_product
 from .product_form_simple import SimpleProductForm
 from .product_form_variable import VariableProductForm
 from .product_list import ProductListWidget
@@ -51,11 +54,13 @@ class MainWindow(QMainWindow):
 
         self.simple_form = SimpleProductForm()
         self.simple_form.saved.connect(self._on_form_saved)
+        self.simple_form.sync_requested.connect(self._on_sync_requested)
         self.simple_form.cancelled.connect(self._show_placeholder)
         self.form_stack.addWidget(self.simple_form)
 
         self.variable_form = VariableProductForm()
         self.variable_form.saved.connect(self._on_form_saved)
+        self.variable_form.sync_requested.connect(self._on_sync_requested)
         self.variable_form.cancelled.connect(self._show_placeholder)
         self.form_stack.addWidget(self.variable_form)
 
@@ -86,6 +91,9 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         clear_all_action = file_menu.addAction(t("products.clear_all"))
         clear_all_action.triggered.connect(self._on_clear_all)
+
+        factory_reset_action = file_menu.addAction(t("app.factory_reset"))
+        factory_reset_action.triggered.connect(self._on_factory_reset)
 
     # ------------------------------------------------------------------ #
     # List / navigation
@@ -157,6 +165,27 @@ class MainWindow(QMainWindow):
         self._show_placeholder()
         QMessageBox.information(self, t("products.clear_all"), t("products.clear_all_done", count=count))
 
+    def _on_factory_reset(self):
+        text, ok = QInputDialog.getText(
+            self, t("app.factory_reset"),
+            t("app.factory_reset_confirm_prompt"),
+        )
+        if not ok:
+            return
+        if text.strip().upper() != "RESET":
+            QMessageBox.information(self, t("app.factory_reset"), t("app.factory_reset_cancelled"))
+            return
+
+        self.db.clear_all()
+        credential_store.clear_application_password()
+        self.settings.site_url = ""
+        self.settings.site_username = ""
+        self.settings_store.save(self.settings)
+
+        self._refresh_list()
+        self._show_placeholder()
+        QMessageBox.information(self, t("app.factory_reset"), t("app.factory_reset_done"))
+
     def _on_form_saved(self, product: Product):
         try:
             self.db.save_product(product)
@@ -165,6 +194,75 @@ class MainWindow(QMainWindow):
             return
         self._refresh_list()
         self._show_placeholder()
+
+    def _on_sync_requested(self, product: Product):
+        # Local save always happens first and uses the exact same path as
+        # the plain Save button -- the local database stays the source of
+        # truth even for products that get pushed live.
+        try:
+            self.db.save_product(product)
+        except ValueError as e:
+            QMessageBox.critical(self, t("common.error"), str(e))
+            return
+        self._refresh_list()
+
+        connection = self._get_site_connection()
+        if connection is None:
+            QMessageBox.information(self, t("product_form.save_and_sync"), t("sync.not_configured"))
+            self._show_placeholder()
+            return
+
+        self.setCursor(Qt.WaitCursor)
+        self.statusBar().showMessage(t("sync.in_progress"))
+        # Without this, the cursor/status change above would never actually
+        # get painted -- Qt only repaints when the event loop runs, and
+        # sync_product() below blocks the same thread synchronously, so the
+        # "wait" indicator would be invisible for the entire duration it's
+        # meant to show.
+        QApplication.processEvents()
+        try:
+            result = sync_product(connection, product)
+        except SiteSyncError as e:
+            QMessageBox.critical(self, t("sync.error_title"), str(e))
+            return
+        finally:
+            self.unsetCursor()
+            self.statusBar().clearMessage()
+
+        self._show_placeholder()
+        self._present_sync_result(product, result)
+
+    def _get_site_connection(self):
+        if not self.settings.site_url or not self.settings.site_username:
+            return None
+        password = credential_store.load_application_password()
+        if not password:
+            return None
+        return SiteConnection(
+            site_url=self.settings.site_url,
+            username=self.settings.site_username,
+            application_password=password,
+        )
+
+    def _present_sync_result(self, product: Product, result: dict):
+        lines = []
+        if result.get("_warnings"):
+            lines.extend(result["_warnings"])
+        if result.get("log"):
+            lines.extend(result["log"])
+
+        if result.get("success"):
+            title = t("sync.success_title")
+            summary = t("sync.success_body", sku=product.sku)
+            if lines:
+                QMessageBox.information(self, title, summary + "\n\n" + "\n".join(lines))
+            else:
+                QMessageBox.information(self, title, summary)
+        else:
+            QMessageBox.warning(
+                self, t("sync.failed_title"),
+                t("sync.failed_body", sku=product.sku) + "\n\n" + "\n".join(lines or [t("sync.no_details")]),
+            )
 
     # ------------------------------------------------------------------ #
     # CSV import / export
@@ -249,3 +347,14 @@ class MainWindow(QMainWindow):
         if dialog.exec():
             self.settings = dialog.get_settings()
             self.settings_store.save(self.settings)
+            password = dialog.get_site_password()
+            if password:
+                try:
+                    credential_store.save_application_password(password)
+                except credential_store.CredentialStoreError as e:
+                    QMessageBox.warning(self, t("common.warning"), str(e))
+            else:
+                # The field is pre-filled with the currently stored password
+                # when the dialog opens, so submitting it empty is an
+                # unambiguous, deliberate "remove it" -- not "nothing to do".
+                credential_store.clear_application_password()

@@ -27,6 +27,7 @@ class GalleryEditorWidget(QWidget):
         self.layout_ = QVBoxLayout(self)
         self.layout_.setContentsMargins(0, 0, 0, 0)
         self.pickers_container = QVBoxLayout()
+        self.pickers_container.setSpacing(10)
         self.layout_.addLayout(self.pickers_container)
 
         add_button = QPushButton(t("product_form.add_gallery_image"))
@@ -78,19 +79,28 @@ class GalleryEditorWidget(QWidget):
 
 class SimpleProductForm(QWidget):
     saved = Signal(object)   # emits the saved Product
+    sync_requested = Signal(object)  # emits the Product to save-then-push to the live site
     cancelled = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
 
         outer = QVBoxLayout(self)
+        outer.setContentsMargins(16, 16, 16, 16)
+        outer.setSpacing(16)
+
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.NoFrame)
         outer.addWidget(scroll)
 
         content = QWidget()
         scroll.setWidget(content)
         form = QFormLayout(content)
+        form.setContentsMargins(20, 20, 20, 20)
+        form.setHorizontalSpacing(16)
+        form.setVerticalSpacing(14)
+        form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
 
         self.name_input = QLineEdit()
         form.addRow(t("product_form.name"), self.name_input)
@@ -145,9 +155,15 @@ class SimpleProductForm(QWidget):
         form.addRow(self.error_label)
 
         button_row = QHBoxLayout()
+        button_row.setSpacing(10)
         self.save_button = QPushButton(t("product_form.save"))
         self.save_button.clicked.connect(self._on_save_clicked)
         button_row.addWidget(self.save_button)
+
+        self.sync_button = QPushButton(t("product_form.save_and_sync"))
+        self.sync_button.setToolTip(t("product_form.save_and_sync_tooltip"))
+        self.sync_button.clicked.connect(self._on_sync_clicked)
+        button_row.addWidget(self.sync_button)
 
         self.cancel_button = QPushButton(t("product_form.cancel"))
         self.cancel_button.clicked.connect(self.cancelled.emit)
@@ -201,11 +217,21 @@ class SimpleProductForm(QWidget):
         )
 
     def _on_save_clicked(self):
+        product = self._validate_and_build()
+        if product:
+            self.saved.emit(product)
+
+    def _on_sync_clicked(self):
+        product = self._validate_and_build()
+        if product:
+            self.sync_requested.emit(product)
+
+    def _validate_and_build(self) -> Product | None:
         product = self._build_product()
         errors = product.validate()
         if errors:
             self.error_label.setText("\n".join(errors))
             self.error_label.show()
-            return
+            return None
         self.error_label.hide()
-        self.saved.emit(product)
+        return product

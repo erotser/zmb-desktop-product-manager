@@ -216,6 +216,203 @@ def test_clicking_a_variable_product_row_previews_correct_form(window, qtbot):
     assert window.variable_form.sku_input.text() == "TSHIRT-001"
 
 
+def test_save_and_sync_end_to_end_against_real_server(window, qtbot, monkeypatch):
+    """Full chain: click 'Save & Sync to Site' in the real form -> main
+    window handler -> site_sync client -> a real local HTTP server
+    standing in for the WordPress site -> result dialog. Verifies the
+    actual wiring, not just each piece in isolation."""
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    received = {}
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            self._json(200, {"plugin": "zombee-product-manager", "plugin_version": "1.4.2", "site_name": "Test"})
+
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", 0))
+            received["body"] = json.loads(self.rfile.read(length).decode("utf-8"))
+            self._json(200, {
+                "success": True, "product_id": 999,
+                "counts": {"products_created": 1, "products_updated": 0, "variations_created": 0,
+                           "variations_updated": 0, "rows_failed": 0},
+                "log": ["Creating new product MUG-SYNC-001"],
+            })
+
+        def _json(self, status, body):
+            payload = json.dumps(body).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        window.settings.site_url = f"http://127.0.0.1:{server.server_port}"
+        window.settings.site_username = "admin"
+
+        from app import credential_store
+        monkeypatch.setattr(credential_store, "load_application_password", lambda: "xxxx xxxx xxxx xxxx")
+
+        from PySide6.QtWidgets import QMessageBox
+        monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **kw: None))
+
+        window._on_add_simple()
+        window.simple_form.sku_input.setText("MUG-SYNC-001")
+        window.simple_form.name_input.setText("Sync Test Mug")
+        window.simple_form.price_input.setText("10.00")
+
+        window.simple_form._on_sync_clicked()
+
+        # The product was saved locally...
+        assert window.db.get_product_by_sku("MUG-SYNC-001") is not None
+        # ...and the real HTTP server actually received it.
+        assert received["body"]["parent_sku"] == "MUG-SYNC-001"
+        assert received["body"]["product_name"] == "Sync Test Mug"
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+
+
+def test_sync_without_configured_connection_still_saves_locally(window, qtbot, monkeypatch):
+    """If no site connection is set up, syncing should still save locally
+    and tell the user why it didn't push, rather than failing silently or
+    losing the local save."""
+    from PySide6.QtWidgets import QMessageBox
+    messages = []
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **kw: messages.append(a)))
+
+    window._on_add_simple()
+    window.simple_form.sku_input.setText("X-001")
+    window.simple_form.name_input.setText("X")
+    window.simple_form.price_input.setText("5")
+
+    window.simple_form._on_sync_clicked()
+
+    assert window.db.get_product_by_sku("X-001") is not None
+    assert len(messages) == 1
+
+
+def test_clearing_password_field_in_settings_actually_clears_stored_credential(window, qtbot, monkeypatch):
+    """Regression: previously, submitting Settings with the password field
+    blanked out silently left the OLD stored password untouched instead of
+    removing it, since `if password:` was false for an empty string and
+    nothing else handled that case. This exercises the real
+    _on_open_settings() code path, not a reimplementation of its logic."""
+    from app import credential_store
+    from app.ui.settings_dialog import SettingsDialog
+
+    # No real OS keychain exists in this test environment -- swap in an
+    # in-memory fake, same approach as test_credential_store.py.
+    fake_store = {}
+    monkeypatch.setattr(credential_store.keyring, "set_password", lambda s, u, p: fake_store.update({u: p}))
+    monkeypatch.setattr(credential_store.keyring, "get_password", lambda s, u: fake_store.get(u))
+
+    def fake_delete(s, u):
+        if u not in fake_store:
+            import keyring.errors
+            raise keyring.errors.PasswordDeleteError("not found")
+        del fake_store[u]
+
+    monkeypatch.setattr(credential_store.keyring, "delete_password", fake_delete)
+
+    credential_store.save_application_password("original-password")
+    assert credential_store.load_application_password() == "original-password"
+
+    def fake_exec(self):
+        # Simulates: dialog opened (pre-filled with "original-password" per
+        # normal behavior), user deliberately cleared the field, clicked OK.
+        self.site_password_input.setText("")
+        return 1  # QDialog.Accepted
+
+    monkeypatch.setattr(SettingsDialog, "exec", fake_exec)
+
+    window._on_open_settings()
+
+    assert credential_store.load_application_password() is None
+
+
+def test_factory_reset_wrong_or_cancelled_confirmation_changes_nothing(window, qtbot, monkeypatch):
+    from app import credential_store
+
+    fake_store = {}
+    monkeypatch.setattr(credential_store.keyring, "set_password", lambda s, u, p: fake_store.update({u: p}))
+    monkeypatch.setattr(credential_store.keyring, "get_password", lambda s, u: fake_store.get(u))
+    monkeypatch.setattr(credential_store.keyring, "delete_password", lambda s, u: fake_store.pop(u, None))
+
+    window._on_add_simple()
+    window.simple_form.sku_input.setText("X-001")
+    window.simple_form.name_input.setText("X")
+    window.simple_form.price_input.setText("5")
+    with qtbot.waitSignal(window.simple_form.saved, timeout=1000):
+        window.simple_form._on_save_clicked()
+
+    credential_store.save_application_password("secret-password")
+    window.settings.site_url = "https://example.com"
+    window.settings.site_username = "admin"
+
+    from PySide6.QtWidgets import QInputDialog, QMessageBox
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **kw: None))
+
+    monkeypatch.setattr(QInputDialog, "getText", staticmethod(lambda *a, **kw: ("nope", True)))
+    window._on_factory_reset()
+    assert window.db.count_products() == 1
+    assert credential_store.load_application_password() == "secret-password"
+    assert window.settings.site_url == "https://example.com"
+
+    monkeypatch.setattr(QInputDialog, "getText", staticmethod(lambda *a, **kw: ("RESET", False)))
+    window._on_factory_reset()
+    assert window.db.count_products() == 1
+    assert credential_store.load_application_password() == "secret-password"
+
+
+def test_factory_reset_clears_products_credential_and_site_settings(window, qtbot, monkeypatch):
+    from app import credential_store
+
+    fake_store = {}
+    monkeypatch.setattr(credential_store.keyring, "set_password", lambda s, u, p: fake_store.update({u: p}))
+    monkeypatch.setattr(credential_store.keyring, "get_password", lambda s, u: fake_store.get(u))
+    monkeypatch.setattr(credential_store.keyring, "delete_password", lambda s, u: fake_store.pop(u, None))
+
+    window._on_add_simple()
+    window.simple_form.sku_input.setText("X-001")
+    window.simple_form.name_input.setText("X")
+    window.simple_form.price_input.setText("5")
+    with qtbot.waitSignal(window.simple_form.saved, timeout=1000):
+        window.simple_form._on_save_clicked()
+    assert window.db.count_products() == 1
+
+    credential_store.save_application_password("secret-password")
+    window.settings.site_url = "https://example.com"
+    window.settings.site_username = "admin"
+
+    from PySide6.QtWidgets import QInputDialog, QMessageBox
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **kw: None))
+    monkeypatch.setattr(QInputDialog, "getText", staticmethod(lambda *a, **kw: ("RESET", True)))
+
+    window._on_factory_reset()
+
+    assert window.db.count_products() == 0
+    assert window.product_list.table.rowCount() == 0
+    assert credential_store.load_application_password() is None
+    assert window.settings.site_url == ""
+    assert window.settings.site_username == ""
+
+    # Also confirmed persisted to disk, not just the in-memory object.
+    reloaded = window.settings_store.load()
+    assert reloaded.site_url == ""
+    assert reloaded.site_username == ""
+
+
 def test_full_export_then_import_cycle(window, qtbot, tmp_path, monkeypatch):
     # Save one simple and one variable product.
     window._on_add_simple()

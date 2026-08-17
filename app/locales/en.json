@@ -21,6 +21,11 @@
   "products.clear_all_cancelled": "Cancelled -- nothing was deleted.",
   "products.clear_all_done": "Deleted {count} product(s).",
 
+  "app.factory_reset": "Factory Reset...",
+  "app.factory_reset_confirm_prompt": "This deletes EVERYTHING: all products, and your saved site connection (site URL, username, and application password). This cannot be undone. You'll need to reconnect in Settings before syncing again.\n\nType RESET to confirm:",
+  "app.factory_reset_cancelled": "Cancelled -- nothing was reset.",
+  "app.factory_reset_done": "Done. All products and site connection details have been cleared.",
+
   "product.type.simple": "Simple",
   "product.type.variable": "Variable",
 
@@ -59,6 +64,8 @@
   "variations.no_attributes": "Add at least one attribute with values first.",
   "variations.confirm_remove": "These variations no longer match your attributes and will be removed: {skus}. Continue?",
   "product_form.save": "Save",
+  "product_form.save_and_sync": "Save && Sync to Site",
+  "product_form.save_and_sync_tooltip": "Saves locally, then pushes this product straight to your WooCommerce site.",
   "product_form.cancel": "Cancel",
 
   "variation.sku": "SKU",
@@ -85,6 +92,25 @@
   "settings.compression_quality": "Image Quality",
   "settings.compression_max_dimension": "Max Image Size (pixels)",
   "settings.language": "Language",
+  "settings.site_connection": "Site Connection (for \"Save & Sync to Site\")",
+  "settings.site_connection_help": "Uses a WordPress Application Password -- go to your site's Users > Profile page, scroll to \"Application Passwords\", and create one named e.g. \"Zombee Desktop\". This does not require sharing your login password, and can be revoked any time from that same page.",
+  "settings.site_url": "Site URL",
+  "settings.site_username": "WordPress Username",
+  "settings.site_password": "Application Password",
+  "settings.site_password_placeholder": "xxxx xxxx xxxx xxxx xxxx xxxx",
+  "settings.test_connection": "Test Connection",
+  "settings.testing_connection": "Testing...",
+  "settings.connection_missing_fields": "Fill in the site URL, username, and application password first.",
+  "settings.connection_success": "Connected to \"{site}\" (plugin v{version}).",
+
+  "sync.not_configured": "Saved locally. To also push this product to your site, set up the connection details in Settings first.",
+  "sync.in_progress": "Syncing to site...",
+  "sync.error_title": "Sync Failed",
+  "sync.success_title": "Synced",
+  "sync.success_body": "{sku} was saved locally and synced to your site.",
+  "sync.failed_title": "Sync Failed",
+  "sync.failed_body": "{sku} was saved locally, but the site rejected it:",
+  "sync.no_details": "No further details were provided.",
 
   "common.ok": "OK",
   "common.cancel": "Cancel",
