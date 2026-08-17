@@ -24,6 +24,14 @@ from dataclasses import dataclass
 from typing import Optional
 
 from .models import Product
+from . import __version__
+
+# Without a distinctive User-Agent, Python's urllib sends its own default
+# ("Python-urllib/3.x"), which is one of the most commonly blocked strings
+# on the internet -- security plugins (Wordfence, etc.) and hosting-level
+# firewalls routinely block it by default as an obvious automated-script
+# signature, with zero site-specific configuration needed to trigger it.
+USER_AGENT = f"ZombeeProductManager/{__version__}"
 
 
 class SiteSyncError(Exception):
@@ -119,7 +127,9 @@ def test_connection(connection: SiteConnection, timeout: int = 15) -> dict:
     Raises SiteSyncError with a specific, actionable reason on failure.
     """
     url = connection.base_api_url() + "/status"
-    request = urllib.request.Request(url, headers={"Authorization": connection._auth_header()})
+    request = urllib.request.Request(
+        url, headers={"Authorization": connection._auth_header(), "User-Agent": USER_AGENT}
+    )
 
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -246,6 +256,7 @@ def sync_product(connection: SiteConnection, product: Product, timeout: int = 30
         headers={
             "Authorization": connection._auth_header(),
             "Content-Type": "application/json",
+            "User-Agent": USER_AGENT,
         },
     )
 

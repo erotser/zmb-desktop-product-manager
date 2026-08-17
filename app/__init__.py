@@ -8,4 +8,4 @@ exactly which build is actually running. Bump this alongside README.md's
 version line whenever a new build is packaged.
 """
 
-__version__ = "0.3.4"
+__version__ = "0.3.6"

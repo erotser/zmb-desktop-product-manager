@@ -18,6 +18,7 @@ from app.site_sync import SiteConnection, SiteSyncError, build_sync_payload, syn
 
 VALID_USER = "admin"
 VALID_PASSWORD = "xxxx xxxx xxxx xxxx xxxx xxxx"
+received_user_agents = []
 
 
 class MockPluginHandler(BaseHTTPRequestHandler):
@@ -54,6 +55,7 @@ class MockPluginHandler(BaseHTTPRequestHandler):
         if not self._check_auth():
             self._send_json(401, {"code": "rest_forbidden", "message": "Auth failed"})
             return
+        received_user_agents.append(self.headers.get("User-Agent", ""))
         if self.path == "/wp-json/zombee/v1/status":
             if self.behavior == "no_plugin":
                 self._send_json(404, {"code": "rest_no_route", "message": "No route"})
@@ -126,6 +128,7 @@ class MockPluginHandler(BaseHTTPRequestHandler):
 @pytest.fixture
 def mock_server():
     MockPluginHandler.behavior = "success"
+    received_user_agents.clear()
     server = HTTPServer(("127.0.0.1", 0), MockPluginHandler)
     port = server.server_port
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -144,6 +147,24 @@ def test_connection_success(connection):
     result = site_sync.test_connection(connection)
     assert result["plugin"] == "zombee-product-manager"
     assert result["plugin_version"] == "1.4.2"
+
+
+def test_requests_send_a_real_user_agent_not_pythons_default(connection):
+    """
+    Regression: requests previously had no User-Agent set at all, so
+    Python's urllib sent its own default ("Python-urllib/3.x") -- one of
+    the most commonly blocked strings on the internet, since security
+    plugins and hosting firewalls routinely block it out of the box as an
+    obvious automated-script signature, with no site-specific
+    configuration needed to trigger it. This was very likely the actual
+    cause of a real-world 403 that turned out to be an HTML firewall block
+    page rather than anything from the plugin itself.
+    """
+    site_sync.test_connection(connection)
+    assert len(received_user_agents) == 1
+    ua = received_user_agents[0]
+    assert ua.startswith("ZombeeProductManager/")
+    assert "python-urllib" not in ua.lower()
 
 
 def test_site_url_missing_scheme_is_normalized_to_https():

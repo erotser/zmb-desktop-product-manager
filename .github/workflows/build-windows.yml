@@ -34,7 +34,7 @@ jobs:
         run: pyinstaller build.spec
 
       - name: Upload executable artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ZombeeProductManager-windows
           path: dist/ZombeeProductManager.exe
