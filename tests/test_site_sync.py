@@ -53,6 +53,15 @@ class MockPluginHandler(BaseHTTPRequestHandler):
             if self.behavior == "no_permission":
                 self._send_json(403, {"code": "vpci_rest_forbidden", "message": "No permission"})
                 return
+            if self.behavior == "no_permission_detailed":
+                # Mirrors the real plugin's actual diagnostic 403 response.
+                self._send_json(403, {
+                    "code": "vpci_rest_forbidden",
+                    "message": "This account (roles: administrator) does not have the "
+                               "manage_woocommerce capability. Try deactivating and "
+                               "reactivating WooCommerce.",
+                })
+                return
             self._send_json(200, {
                 "plugin": "zombee-product-manager", "plugin_version": "1.4.2",
                 "site_name": "Test Site", "woocommerce_active": True, "user": VALID_USER,
@@ -155,6 +164,23 @@ def test_connection_no_permission(connection):
     MockPluginHandler.behavior = "no_permission"
     with pytest.raises(SiteSyncError, match="permission"):
         site_sync.test_connection(connection)
+
+
+def test_connection_shows_server_detailed_message_not_generic_fallback(connection):
+    """
+    Regression: test_connection() previously ignored the server's actual
+    response body entirely for any HTTPError and always substituted a
+    hardcoded generic message. This meant the plugin's diagnostic 403
+    message (naming the account's actual roles and the real cause) never
+    reached the user -- they saw the same generic "no permission" text
+    regardless of what the server actually said.
+    """
+    MockPluginHandler.behavior = "no_permission_detailed"
+    with pytest.raises(SiteSyncError) as exc_info:
+        site_sync.test_connection(connection)
+    assert "administrator" in str(exc_info.value)
+    assert "manage_woocommerce" in str(exc_info.value)
+    assert str(exc_info.value) != "This account doesn't have permission to manage products."
 
 
 def test_connection_unreachable_host():

@@ -80,6 +80,23 @@ def _describe_http_error(e: urllib.error.HTTPError, site_url: str) -> str:
     return f"Site returned an error ({e.code})."
 
 
+def _read_error_detail(e: urllib.error.HTTPError) -> Optional[str]:
+    """
+    Tries to extract the server's own error message from an HTTPError's
+    response body (WordPress serializes both WP_Error responses and our
+    own custom error responses as JSON with a "message" field). Returns
+    None if the body isn't readable/JSON/doesn't have one, so the caller
+    can fall back to a generic message instead.
+    """
+    try:
+        body = json.loads(e.read().decode("utf-8"))
+    except (json.JSONDecodeError, AttributeError, UnicodeDecodeError):
+        return None
+    if isinstance(body, dict) and body.get("message"):
+        return str(body["message"])
+    return None
+
+
 def test_connection(connection: SiteConnection, timeout: int = 15) -> dict:
     """
     Calls the /status endpoint to verify the URL, credentials, and that the
@@ -94,7 +111,13 @@ def test_connection(connection: SiteConnection, timeout: int = 15) -> dict:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             data = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
-        raise SiteSyncError(_describe_http_error(e, connection.site_url)) from e
+        fallback = _describe_http_error(e, connection.site_url)
+        detail = _read_error_detail(e)
+        if detail and detail.strip() and detail.strip() != fallback.strip():
+            message = f'{fallback} Server said: "{detail}"'
+        else:
+            message = fallback
+        raise SiteSyncError(message) from e
     except urllib.error.URLError as e:
         raise SiteSyncError(f"Could not reach {connection.site_url}: {e.reason}") from e
     except json.JSONDecodeError as e:
