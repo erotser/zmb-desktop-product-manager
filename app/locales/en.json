@@ -81,6 +81,8 @@
   "variation.description": "Description",
 
   "csv.import": "Import CSV...",
+  "csv.download_from_site": "Download from Site",
+  "csv.downloading": "Downloading from site...",
   "csv.export": "Export CSV...",
   "csv.import_success": "Imported {count} product(s).",
   "csv.import_warnings_title": "Some rows were skipped",
@@ -109,6 +111,7 @@
   "settings.connection_success": "Connected to \"{site}\" (plugin v{version}).",
 
   "sync.not_configured": "Saved locally. To also push this product to your site, set up the connection details in Settings first.",
+  "sync.not_configured_download": "Set up the site connection in Settings first, then try downloading again.",
   "sync.in_progress": "Syncing to site...",
   "sync.error_title": "Sync Failed",
   "sync.success_title": "Synced",

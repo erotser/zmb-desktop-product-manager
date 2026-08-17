@@ -432,6 +432,73 @@ def test_about_dialog_shows_current_version(window, monkeypatch):
     assert __version__ in about_body
 
 
+def test_download_from_site_end_to_end_against_real_server(window, qtbot, monkeypatch):
+    """Full chain: Download from Site -> real HTTP server standing in for
+    the WordPress site -> downloaded CSV written locally -> parsed via the
+    same import path as a manually picked file -> products appear in the
+    local database and the list."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            if self.path == "/wp-json/zombee/v1/export":
+                csv_content = (
+                    "\ufeffparent_sku,product_type,product_name,variation_sku,variation_price\r\n"
+                    "DL-MUG-001,simple,Downloaded Mug,,15.00\r\n"
+                )
+                payload = csv_content.encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/csv")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        window.settings.site_url = f"http://127.0.0.1:{server.server_port}"
+        window.settings.site_username = "admin"
+
+        from app import credential_store
+        monkeypatch.setattr(credential_store, "load_application_password", lambda: "xxxx xxxx xxxx xxxx")
+
+        from PySide6.QtWidgets import QMessageBox
+        monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **kw: None))
+
+        window._on_download_from_site()
+
+        product = window.db.get_product_by_sku("DL-MUG-001")
+        assert product is not None
+        assert product.name == "Downloaded Mug"
+        assert product.price == "15.00"
+        assert window.product_list.table.rowCount() == 1
+
+        # The temp download file shouldn't linger after a successful import.
+        from pathlib import Path
+        tmp_path = Path(window.settings.database_path).parent / "downloaded-export.csv"
+        assert not tmp_path.exists()
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+
+
+def test_download_from_site_without_connection_shows_setup_message(window, qtbot, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+    messages = []
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **kw: messages.append(a)))
+
+    window._on_download_from_site()
+
+    assert len(messages) == 1
+    assert window.db.list_products() == []
+
+
 def test_full_export_then_import_cycle(window, qtbot, tmp_path, monkeypatch):
     # Save one simple and one variable product.
     window._on_add_simple()

@@ -1,6 +1,6 @@
 # Zombee Product Manager Desktop
 
-Version: 0.3.6
+Version: 0.4.0
 
 A Windows companion app for the Zombee Product Manager WordPress plugin.
 Manage simple and variable WooCommerce products locally with an easier
@@ -10,7 +10,7 @@ with one click.
 
 ## Status
 
-110 tests passing (pytest-qt for GUI logic, plus real local HTTP servers
+117 tests passing (pytest-qt for GUI logic, plus real local HTTP servers
 standing in for both image hosts and the WordPress site itself, rather
 than mocking network calls -- see Design notes).
 
@@ -29,6 +29,10 @@ than mocking network calls -- see Design notes).
   including the plugin's formula-injection escaping and its reversal
 - **Save & Sync to Site**: saves locally, then pushes the product directly
   to your WooCommerce site via the plugin's REST API (see Design notes)
+- **Download from Site**: fetches a full product export directly from the
+  site (same REST API), imports it locally the same way a manually picked
+  CSV file would -- no more browser round-trip through wp-admin's export
+  screen first
 - Clear All Products, with a typed "DELETE" confirmation
 - Factory Reset: wipes products, the saved site credential, and site
   connection settings together, with a typed "RESET" confirmation

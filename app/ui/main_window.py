@@ -18,7 +18,7 @@ from ..i18n import t
 from ..image_manager import ImageExporter
 from ..models import Product
 from ..settings import AppSettings, SettingsStore
-from ..site_sync import SiteConnection, SiteSyncError, sync_product
+from ..site_sync import SiteConnection, SiteSyncError, download_export, sync_product
 from .product_form_simple import SimpleProductForm
 from .product_form_variable import VariableProductForm
 from .product_list import ProductListWidget
@@ -81,6 +81,9 @@ class MainWindow(QMainWindow):
 
         import_action = file_menu.addAction(t("csv.import"))
         import_action.triggered.connect(self._on_import_csv)
+
+        download_action = file_menu.addAction(t("csv.download_from_site"))
+        download_action.triggered.connect(self._on_download_from_site)
 
         export_action = file_menu.addAction(t("csv.export"))
         export_action.triggered.connect(self._on_export_csv)
@@ -280,6 +283,13 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(self, t("csv.import"), "", "CSV Files (*.csv)")
         if not path:
             return
+        self._import_csv_from_path(path)
+
+    def _import_csv_from_path(self, path: str):
+        """Shared by the file-picker Import CSV flow and the Download from
+        Site flow -- both end up with a local CSV path and from here on
+        should behave identically (same parsing, same per-product error
+        handling, same result dialog)."""
         try:
             products, warnings = csv_io.import_from_csv(path)
         except csv_io.CsvFormatError as e:
@@ -311,6 +321,37 @@ class MainWindow(QMainWindow):
             )
         else:
             QMessageBox.information(self, t("common.ok"), t("csv.import_success", count=saved_count))
+
+    def _on_download_from_site(self):
+        connection = self._get_site_connection()
+        if connection is None:
+            QMessageBox.information(self, t("csv.download_from_site"), t("sync.not_configured_download"))
+            return
+
+        self.setCursor(Qt.WaitCursor)
+        self.statusBar().showMessage(t("csv.downloading"))
+        QApplication.processEvents()
+        try:
+            content = download_export(connection)
+        except SiteSyncError as e:
+            QMessageBox.critical(self, t("sync.error_title"), str(e))
+            return
+        finally:
+            self.unsetCursor()
+            self.statusBar().clearMessage()
+
+        tmp_dir = Path(self.settings.database_path).parent
+        tmp_path = tmp_dir / "downloaded-export.csv"
+        try:
+            tmp_path.write_bytes(content)
+        except OSError as e:
+            QMessageBox.critical(self, t("common.error"), str(e))
+            return
+
+        try:
+            self._import_csv_from_path(str(tmp_path))
+        finally:
+            tmp_path.unlink(missing_ok=True)
 
     def _on_export_csv(self):
         products = self.db.list_products()
