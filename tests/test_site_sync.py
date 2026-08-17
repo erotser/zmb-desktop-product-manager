@@ -42,6 +42,14 @@ class MockPluginHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def _send_html(self, status: int, html: str):
+        payload = html.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
     def do_GET(self):
         if not self._check_auth():
             self._send_json(401, {"code": "rest_forbidden", "message": "Auth failed"})
@@ -61,6 +69,12 @@ class MockPluginHandler(BaseHTTPRequestHandler):
                                "manage_woocommerce capability. Try deactivating and "
                                "reactivating WooCommerce.",
                 })
+                return
+            if self.behavior == "security_plugin_html_block":
+                # Simulates a security plugin or hosting firewall
+                # intercepting the request BEFORE it reaches our plugin at
+                # all, returning its own HTML block page instead of JSON.
+                self._send_html(403, "<html><body><h1>403 Forbidden</h1><p>Request blocked by security policy.</p></body></html>")
                 return
             self._send_json(200, {
                 "plugin": "zombee-product-manager", "plugin_version": "1.4.2",
@@ -181,6 +195,22 @@ def test_connection_shows_server_detailed_message_not_generic_fallback(connectio
     assert "administrator" in str(exc_info.value)
     assert "manage_woocommerce" in str(exc_info.value)
     assert str(exc_info.value) != "This account doesn't have permission to manage products."
+
+
+def test_connection_shows_raw_body_when_response_is_not_json(connection):
+    """
+    If something OTHER than our plugin intercepts the request (a security
+    plugin or hosting firewall returning its own HTML block page instead
+    of our JSON), the raw response must still be surfaced -- not silently
+    swallowed in favor of a generic message that hides what's really
+    happening.
+    """
+    MockPluginHandler.behavior = "security_plugin_html_block"
+    with pytest.raises(SiteSyncError) as exc_info:
+        site_sync.test_connection(connection)
+    message = str(exc_info.value)
+    assert "raw response" in message
+    assert "Request blocked by security policy" in message
 
 
 def test_connection_unreachable_host():

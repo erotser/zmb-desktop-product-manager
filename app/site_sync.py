@@ -84,17 +84,31 @@ def _read_error_detail(e: urllib.error.HTTPError) -> Optional[str]:
     """
     Tries to extract the server's own error message from an HTTPError's
     response body (WordPress serializes both WP_Error responses and our
-    own custom error responses as JSON with a "message" field). Returns
-    None if the body isn't readable/JSON/doesn't have one, so the caller
-    can fall back to a generic message instead.
+    own custom error responses as JSON with a "message" field). If the
+    body isn't JSON, or is JSON but has no usable "message" field, this
+    still surfaces a raw snippet of whatever WAS returned rather than
+    discarding it -- an unexpected response shape (e.g. a security
+    plugin's own HTML block page, or a hosting firewall's challenge page)
+    is itself a critical diagnostic clue, and silently hiding it just
+    turns a solvable problem into a mystery.
     """
     try:
-        body = json.loads(e.read().decode("utf-8"))
-    except (json.JSONDecodeError, AttributeError, UnicodeDecodeError):
+        raw = e.read().decode("utf-8", errors="replace")
+    except AttributeError:
         return None
-    if isinstance(body, dict) and body.get("message"):
-        return str(body["message"])
-    return None
+
+    try:
+        body = json.loads(raw)
+        if isinstance(body, dict) and body.get("message"):
+            return str(body["message"])
+    except json.JSONDecodeError:
+        pass
+
+    raw = raw.strip()
+    if not raw:
+        return None
+    snippet = raw[:300] + ("..." if len(raw) > 300 else "")
+    return f"(raw response) {snippet}"
 
 
 def test_connection(connection: SiteConnection, timeout: int = 15) -> dict:
