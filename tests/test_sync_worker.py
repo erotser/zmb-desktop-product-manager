@@ -16,11 +16,15 @@ class MockHandler(BaseHTTPRequestHandler):
     # Class-level so tests can configure per-SKU behavior.
     fail_skus = set()  # SKUs that should get a structured failure response
     error_skus = set()  # SKUs that should get a transport-level error (connection refused simulation via 500)
+    delay_seconds = 0  # artificial per-request delay, for timing-sensitive tests
 
     def log_message(self, *a):
         pass
 
     def _send_json(self, status, body):
+        if MockHandler.delay_seconds:
+            import time
+            time.sleep(MockHandler.delay_seconds)
         payload = json.dumps(body).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
@@ -58,6 +62,7 @@ class MockHandler(BaseHTTPRequestHandler):
 def mock_server():
     MockHandler.fail_skus = set()
     MockHandler.error_skus = set()
+    MockHandler.delay_seconds = 0
     server = HTTPServer(("127.0.0.1", 0), MockHandler)
     port = server.server_port
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -149,30 +154,76 @@ def test_one_transport_failure_does_not_stop_the_rest(connection, qtbot):
     assert any("B" in d for d in details)
 
 
-def test_cancel_stops_before_processing_remaining_products(connection, qtbot):
-    products = make_products(["A", "B", "C", "D", "E"])
+def test_cancel_before_start_processes_nothing(connection, qtbot):
+    """
+    A fully deterministic case, unlike the mid-run scenario below: if
+    cancel() is called before start(), the loop's very first cancellation
+    check (before attempting product #1) exits immediately. No cross-
+    thread timing is involved at all here, so this is a reliable way to
+    confirm the cancellation flag itself works correctly.
+    """
+    products = make_products(["A", "B", "C"])
     worker = SyncAllWorker(connection, products)
-
-    progress_calls = []
-
-    def on_progress(index, total, sku, success, message):
-        progress_calls.append(sku)
-        if sku == "B":
-            worker.cancel()
-
-    worker.progress.connect(on_progress)
+    worker.cancel()
 
     with qtbot.waitSignal(worker.finished_all, timeout=5000) as blocker:
         worker.start()
-
     worker.wait()
 
     succeeded, failed, details = blocker.args
-    # Cancelled after B was processed -- C, D, E should never have been attempted.
-    assert "C" not in progress_calls
-    assert "D" not in progress_calls
-    assert "E" not in progress_calls
-    assert succeeded + failed == 2  # only A and B were actually processed
+    assert succeeded == 0
+    assert failed == 0
+
+
+def test_cancel_mid_run_stops_before_processing_the_full_list(connection, qtbot):
+    """
+    Regression: an earlier version of this test cancelled from inside a
+    progress callback (or waited for one specific progress signal, then
+    cancelled) and asserted an EXACT stopping point (e.g. "C must never be
+    attempted"). That's not actually testable reliably: there is no
+    synchronization point between "this thread has observed the signal
+    for item N" and "the worker thread has or hasn't already started item
+    N+1" -- the worker never pauses after emitting a signal, and the
+    observation of that signal on this thread is itself delayed by an
+    indeterminate amount, during which the worker keeps running freely.
+    Both delays are the same rough magnitude and race against each other;
+    no amount of added artificial delay makes that deterministic, it only
+    changes how often the race is lost, which is exactly why this test
+    passed reliably in this sandbox but failed on real Windows CI, then
+    still failed intermittently here too once more system load was added
+    by the rest of the suite running alongside it.
+
+    The actual guarantee this feature needs is "stops meaningfully soon
+    after being cancelled", not "stops at one precise iteration boundary"
+    -- cancellation is deliberately best-effort (adding real cross-thread
+    synchronization to guarantee an exact stopping point would cost
+    responsiveness for no real user-facing benefit). This tests that
+    honest guarantee directly: cancelling shortly after a longer run
+    starts results in meaningfully fewer than all items being processed.
+    """
+    MockHandler.delay_seconds = 0.05
+    try:
+        products = make_products([f"P{i}" for i in range(20)])
+        worker = SyncAllWorker(connection, products)
+
+        progress_calls = []
+        worker.progress.connect(lambda index, total, sku, success, message: progress_calls.append(sku))
+
+        results = {}
+        worker.finished_all.connect(lambda s, f, d: results.update(succeeded=s, failed=f, details=d))
+
+        worker.start()
+        qtbot.waitUntil(lambda: len(progress_calls) >= 1, timeout=8000)
+        worker.cancel()
+
+        qtbot.waitUntil(lambda: "succeeded" in results, timeout=8000)
+        worker.wait()
+
+        total_processed = results["succeeded"] + results["failed"]
+        assert total_processed < len(products)  # did not process everything
+        assert total_processed < len(products) // 2  # stopped meaningfully early, not just "one short"
+    finally:
+        MockHandler.delay_seconds = 0
 
 
 def test_success_with_image_warnings_reported_in_progress_message(connection, qtbot, monkeypatch):
