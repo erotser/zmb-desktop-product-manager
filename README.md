@@ -1,6 +1,6 @@
 # Zombee Product Manager Desktop
 
-Version: 0.3.6
+Version: 0.5.0
 
 A Windows companion app for the Zombee Product Manager WordPress plugin.
 Manage simple and variable WooCommerce products locally with an easier
@@ -10,7 +10,7 @@ with one click.
 
 ## Status
 
-110 tests passing (pytest-qt for GUI logic, plus real local HTTP servers
+127 tests passing (pytest-qt for GUI logic, plus real local HTTP servers
 standing in for both image hosts and the WordPress site itself, rather
 than mocking network calls -- see Design notes).
 
@@ -27,8 +27,15 @@ than mocking network calls -- see Design notes).
   reference) locally for preview/editing
 - CSV import/export, byte-for-byte compatible with the plugin's format,
   including the plugin's formula-injection escaping and its reversal
+- **Sync All to Site**: pushes every local product to the site in one go,
+  on a background thread with a real progress dialog and cancel support --
+  not just the single-product Save & Sync
 - **Save & Sync to Site**: saves locally, then pushes the product directly
   to your WooCommerce site via the plugin's REST API (see Design notes)
+- **Download from Site**: fetches a full product export directly from the
+  site (same REST API), imports it locally the same way a manually picked
+  CSV file would -- no more browser round-trip through wp-admin's export
+  screen first
 - Clear All Products, with a typed "DELETE" confirmation
 - Factory Reset: wipes products, the saved site credential, and site
   connection settings together, with a typed "RESET" confirmation
@@ -39,10 +46,11 @@ than mocking network calls -- see Design notes).
 - Settings: output folder, compression, language, site connection
 - App icon, PyInstaller build spec, GitHub Actions workflow to build the .exe
 
-Not yet built: threaded/async sync (the UI briefly blocks during a sync
-request), an "unsaved changes" guard when switching products mid-edit,
-bulk sync (only one product at a time currently), direct media upload via
-sync (images must already be live on the site -- see Design notes).
+Not yet built: single-product Save & Sync still blocks the UI briefly for
+its one HTTP call (Sync All, which needed it far more, now runs on a
+background thread); an "unsaved changes" guard when switching products
+mid-edit; direct media upload via sync (images must already be live on the
+site -- see Design notes).
 
 ## Project layout
 
@@ -54,6 +62,7 @@ app/
   image_manager.py      Compression, SKU-based renaming, flat upload-folder export
   image_downloader.py   Fetches a remote image URL locally for preview/editing
   site_sync.py          HTTP client for the plugin's REST API (Save & Sync to Site)
+  sync_worker.py        Background thread for Sync All to Site (progress + cancel)
   credential_store.py   Stores the site Application Password via the OS keychain
   settings.py           Persisted app settings (output folder, compression, site, language)
   crash_handler.py      Global exception handler (dialog + log file, not a silent vanish)

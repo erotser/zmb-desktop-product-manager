@@ -6,7 +6,7 @@ from pathlib import Path
 
 from PySide6.QtWidgets import (
     QApplication, QFileDialog, QInputDialog, QLabel, QMainWindow, QMessageBox,
-    QSplitter, QStackedWidget, QWidget,
+    QProgressDialog, QSplitter, QStackedWidget, QWidget,
 )
 from PySide6.QtCore import Qt
 
@@ -18,7 +18,8 @@ from ..i18n import t
 from ..image_manager import ImageExporter
 from ..models import Product
 from ..settings import AppSettings, SettingsStore
-from ..site_sync import SiteConnection, SiteSyncError, sync_product
+from ..site_sync import SiteConnection, SiteSyncError, download_export, sync_product
+from ..sync_worker import SyncAllWorker
 from .product_form_simple import SimpleProductForm
 from .product_form_variable import VariableProductForm
 from .product_list import ProductListWidget
@@ -31,6 +32,12 @@ class MainWindow(QMainWindow):
         self.db = db
         self.settings_store = settings_store
         self.settings = settings
+        # References kept during a "Sync All" run so the QThread and its
+        # progress dialog aren't garbage-collected mid-run (a real PySide6
+        # gotcha -- a QThread with no surviving reference can be destroyed
+        # out from under itself even while still running).
+        self._sync_all_worker = None
+        self._sync_all_dialog = None
 
         self.setWindowTitle(f'{t("app.title")} v{__version__}')
         self.resize(1200, 800)
@@ -82,8 +89,15 @@ class MainWindow(QMainWindow):
         import_action = file_menu.addAction(t("csv.import"))
         import_action.triggered.connect(self._on_import_csv)
 
+        download_action = file_menu.addAction(t("csv.download_from_site"))
+        download_action.triggered.connect(self._on_download_from_site)
+
         export_action = file_menu.addAction(t("csv.export"))
         export_action.triggered.connect(self._on_export_csv)
+
+        file_menu.addSeparator()
+        sync_all_action = file_menu.addAction(t("sync_all.menu_item"))
+        sync_all_action.triggered.connect(self._on_sync_all)
 
         file_menu.addSeparator()
         settings_action = file_menu.addAction(t("nav.settings"))
@@ -280,6 +294,13 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(self, t("csv.import"), "", "CSV Files (*.csv)")
         if not path:
             return
+        self._import_csv_from_path(path)
+
+    def _import_csv_from_path(self, path: str):
+        """Shared by the file-picker Import CSV flow and the Download from
+        Site flow -- both end up with a local CSV path and from here on
+        should behave identically (same parsing, same per-product error
+        handling, same result dialog)."""
         try:
             products, warnings = csv_io.import_from_csv(path)
         except csv_io.CsvFormatError as e:
@@ -311,6 +332,96 @@ class MainWindow(QMainWindow):
             )
         else:
             QMessageBox.information(self, t("common.ok"), t("csv.import_success", count=saved_count))
+
+    def _on_download_from_site(self):
+        connection = self._get_site_connection()
+        if connection is None:
+            QMessageBox.information(self, t("csv.download_from_site"), t("sync.not_configured_download"))
+            return
+
+        self.setCursor(Qt.WaitCursor)
+        self.statusBar().showMessage(t("csv.downloading"))
+        QApplication.processEvents()
+        try:
+            content = download_export(connection)
+        except SiteSyncError as e:
+            QMessageBox.critical(self, t("sync.error_title"), str(e))
+            return
+        finally:
+            self.unsetCursor()
+            self.statusBar().clearMessage()
+
+        tmp_dir = Path(self.settings.database_path).parent
+        tmp_path = tmp_dir / "downloaded-export.csv"
+        try:
+            tmp_path.write_bytes(content)
+        except OSError as e:
+            QMessageBox.critical(self, t("common.error"), str(e))
+            return
+
+        try:
+            self._import_csv_from_path(str(tmp_path))
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+    def _on_sync_all(self):
+        products = self.db.list_products()
+        if not products:
+            QMessageBox.information(self, t("sync_all.menu_item"), t("products.empty_state"))
+            return
+
+        connection = self._get_site_connection()
+        if connection is None:
+            QMessageBox.information(self, t("sync_all.menu_item"), t("sync_all.not_configured"))
+            return
+
+        reply = QMessageBox.question(
+            self, t("sync_all.menu_item"),
+            t("sync_all.confirm_prompt", count=len(products)),
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        self._sync_all_dialog = QProgressDialog(
+            t("sync_all.starting"), t("common.cancel"), 0, len(products), self
+        )
+        self._sync_all_dialog.setWindowTitle(t("sync_all.menu_item"))
+        self._sync_all_dialog.setWindowModality(Qt.WindowModal)
+        self._sync_all_dialog.setMinimumDuration(0)
+        self._sync_all_dialog.setValue(0)
+
+        self._sync_all_worker = SyncAllWorker(connection, products, self)
+        self._sync_all_worker.progress.connect(self._on_sync_all_progress)
+        self._sync_all_worker.finished_all.connect(self._on_sync_all_finished)
+        self._sync_all_dialog.canceled.connect(self._sync_all_worker.cancel)
+
+        self._sync_all_worker.start()
+
+    def _on_sync_all_progress(self, index: int, total: int, sku: str, success: bool, message: str):
+        if self._sync_all_dialog is None:
+            return
+        self._sync_all_dialog.setLabelText(t("sync_all.progress_label", index=index, total=total, sku=sku))
+        self._sync_all_dialog.setValue(index)
+
+    def _on_sync_all_finished(self, succeeded: int, failed: int, failure_details: list):
+        if self._sync_all_dialog is not None:
+            self._sync_all_dialog.close()
+            self._sync_all_dialog = None
+
+        if self._sync_all_worker is not None:
+            self._sync_all_worker.wait()
+            self._sync_all_worker = None
+
+        if failed:
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Warning)
+            msg.setWindowTitle(t("sync_all.menu_item"))
+            msg.setText(t("sync_all.done_with_failures", succeeded=succeeded, failed=failed))
+            msg.setDetailedText("\n".join(failure_details))
+            msg.exec()
+        else:
+            QMessageBox.information(self, t("sync_all.menu_item"), t("sync_all.done_success", count=succeeded))
 
     def _on_export_csv(self):
         products = self.db.list_products()

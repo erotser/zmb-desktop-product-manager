@@ -83,6 +83,22 @@ class MockPluginHandler(BaseHTTPRequestHandler):
                 "site_name": "Test Site", "woocommerce_active": True, "user": VALID_USER,
             })
             return
+        if self.path == "/wp-json/zombee/v1/export":
+            if self.behavior == "export_no_products":
+                self._send_json(404, {"code": "vpci_rest_no_products", "message": "No products found to export."})
+                return
+            csv_content = (
+                "\ufeffparent_sku,product_type,product_name,variation_sku,variation_price\r\n"
+                "MUG-001,simple,Ceramic Mug,,12.50\r\n"
+                "TSHIRT-001,variable,Classic Tee,TSHIRT-001-A,19.99\r\n"
+            )
+            payload = csv_content.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/csv; charset=utf-8")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
         self._send_json(404, {"code": "rest_no_route", "message": "Not found"})
 
     def do_POST(self):
@@ -191,7 +207,7 @@ def test_connection_wrong_credentials(mock_server):
 
 def test_connection_plugin_not_installed(connection):
     MockPluginHandler.behavior = "no_plugin"
-    with pytest.raises(SiteSyncError, match="installed and active"):
+    with pytest.raises(SiteSyncError, match="installed and up to date"):
         site_sync.test_connection(connection)
 
 
@@ -339,3 +355,55 @@ def test_build_payload_prefers_ref_over_local_path_when_both_present():
     payload, warnings = build_sync_payload(product)
     assert payload["product_image"] == "https://example.com/photo.jpg"
     assert warnings == []
+
+
+def test_download_export_returns_raw_csv_bytes(connection):
+    from app.site_sync import download_export
+    content = download_export(connection)
+    assert isinstance(content, bytes)
+    assert b"parent_sku" in content
+    assert b"MUG-001" in content
+
+
+def test_download_export_sends_real_user_agent(connection):
+    from app.site_sync import download_export
+    download_export(connection)
+    assert len(received_user_agents) == 1
+    assert received_user_agents[0].startswith("ZombeeProductManager/")
+
+
+def test_download_export_no_products_raises_clear_error(connection):
+    from app.site_sync import download_export
+    MockPluginHandler.behavior = "export_no_products"
+    with pytest.raises(SiteSyncError, match="No products found"):
+        download_export(connection)
+
+
+def test_download_export_unreachable_host_raises():
+    from app.site_sync import download_export
+    unreachable = SiteConnection(site_url="http://127.0.0.1:1", username="x", application_password="y")
+    with pytest.raises(SiteSyncError, match="Could not reach"):
+        download_export(unreachable, timeout=2)
+
+
+def test_download_export_full_integration_through_real_csv_parser(connection, tmp_path):
+    """
+    The real end-to-end path: download bytes from the site -> write to a
+    local file -> parse with the SAME csv_io.import_from_csv() used for a
+    manually-picked CSV file. Confirms the downloaded content is actually
+    usable, not just "some bytes came back".
+    """
+    from app.site_sync import download_export
+    from app import csv_io
+
+    content = download_export(connection)
+    csv_path = tmp_path / "downloaded.csv"
+    csv_path.write_bytes(content)
+
+    products, warnings = csv_io.import_from_csv(csv_path)
+    assert warnings == []
+    assert len(products) == 2
+    skus = {p.sku for p in products}
+    assert skus == {"MUG-001", "TSHIRT-001"}
+    simple_product = next(p for p in products if p.sku == "MUG-001")
+    assert simple_product.price == "12.50"

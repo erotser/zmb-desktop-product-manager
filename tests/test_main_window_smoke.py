@@ -432,6 +432,164 @@ def test_about_dialog_shows_current_version(window, monkeypatch):
     assert __version__ in about_body
 
 
+def test_sync_all_end_to_end_against_real_server(window, qtbot, monkeypatch):
+    """Full chain: multiple saved products -> Sync All -> real local HTTP
+    server standing in for the site -> each product actually POSTed."""
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    received_skus = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length).decode("utf-8"))
+            received_skus.append(body.get("parent_sku"))
+            payload = json.dumps({
+                "success": True, "product_id": 1,
+                "counts": {"products_created": 1, "products_updated": 0, "variations_created": 0,
+                           "variations_updated": 0, "rows_failed": 0},
+                "log": [],
+            }).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        for sku in ["ALL-A", "ALL-B", "ALL-C"]:
+            window._on_add_simple()
+            window.simple_form.sku_input.setText(sku)
+            window.simple_form.name_input.setText(sku)
+            window.simple_form.price_input.setText("10")
+            with qtbot.waitSignal(window.simple_form.saved, timeout=1000):
+                window.simple_form._on_save_clicked()
+
+        assert len(window.db.list_products()) == 3
+
+        window.settings.site_url = f"http://127.0.0.1:{server.server_port}"
+        window.settings.site_username = "admin"
+
+        from app import credential_store
+        monkeypatch.setattr(credential_store, "load_application_password", lambda: "xxxx xxxx xxxx xxxx")
+
+        from PySide6.QtWidgets import QMessageBox
+        monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **kw: QMessageBox.Yes))
+        monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **kw: None))
+
+        window._on_sync_all()
+        qtbot.waitUntil(lambda: window._sync_all_worker is None, timeout=5000)
+
+        assert set(received_skus) == {"ALL-A", "ALL-B", "ALL-C"}
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+
+
+def test_sync_all_without_connection_shows_setup_message(window, qtbot, monkeypatch):
+    window._on_add_simple()
+    window.simple_form.sku_input.setText("X-001")
+    window.simple_form.name_input.setText("X")
+    window.simple_form.price_input.setText("5")
+    with qtbot.waitSignal(window.simple_form.saved, timeout=1000):
+        window.simple_form._on_save_clicked()
+
+    from PySide6.QtWidgets import QMessageBox
+    messages = []
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **kw: messages.append(a)))
+
+    window._on_sync_all()
+
+    assert len(messages) == 1
+    assert window._sync_all_worker is None
+
+
+def test_sync_all_with_no_products_shows_empty_message(window, qtbot, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+    messages = []
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **kw: messages.append(a)))
+
+    window._on_sync_all()
+
+    assert len(messages) == 1
+
+
+def test_download_from_site_end_to_end_against_real_server(window, qtbot, monkeypatch):
+    """Full chain: Download from Site -> real HTTP server standing in for
+    the WordPress site -> downloaded CSV written locally -> parsed via the
+    same import path as a manually picked file -> products appear in the
+    local database and the list."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_GET(self):
+            if self.path == "/wp-json/zombee/v1/export":
+                csv_content = (
+                    "\ufeffparent_sku,product_type,product_name,variation_sku,variation_price\r\n"
+                    "DL-MUG-001,simple,Downloaded Mug,,15.00\r\n"
+                )
+                payload = csv_content.encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/csv")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        window.settings.site_url = f"http://127.0.0.1:{server.server_port}"
+        window.settings.site_username = "admin"
+
+        from app import credential_store
+        monkeypatch.setattr(credential_store, "load_application_password", lambda: "xxxx xxxx xxxx xxxx")
+
+        from PySide6.QtWidgets import QMessageBox
+        monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **kw: None))
+
+        window._on_download_from_site()
+
+        product = window.db.get_product_by_sku("DL-MUG-001")
+        assert product is not None
+        assert product.name == "Downloaded Mug"
+        assert product.price == "15.00"
+        assert window.product_list.table.rowCount() == 1
+
+        # The temp download file shouldn't linger after a successful import.
+        from pathlib import Path
+        tmp_path = Path(window.settings.database_path).parent / "downloaded-export.csv"
+        assert not tmp_path.exists()
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+
+
+def test_download_from_site_without_connection_shows_setup_message(window, qtbot, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+    messages = []
+    monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **kw: messages.append(a)))
+
+    window._on_download_from_site()
+
+    assert len(messages) == 1
+    assert window.db.list_products() == []
+
+
 def test_full_export_then_import_cycle(window, qtbot, tmp_path, monkeypatch):
     # Save one simple and one variable product.
     window._on_add_simple()

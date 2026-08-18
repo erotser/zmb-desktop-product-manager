@@ -82,8 +82,8 @@ def _describe_http_error(e: urllib.error.HTTPError, site_url: str) -> str:
         return "This account doesn't have permission to manage products."
     if e.code == 404:
         return (
-            "Could not find the sync endpoint -- is Zombee Product Manager "
-            "installed and active on that site?"
+            "Could not find that endpoint -- is Zombee Product Manager "
+            "installed and up to date on that site?"
         )
     return f"Site returned an error ({e.code})."
 
@@ -119,6 +119,19 @@ def _read_error_detail(e: urllib.error.HTTPError) -> Optional[str]:
     return f"(raw response) {snippet}"
 
 
+def _build_http_error_message(e: urllib.error.HTTPError, site_url: str) -> str:
+    """Combines the curated, actionable fallback message with the server's
+    own detail (if it adds anything beyond the fallback) -- shared by every
+    caller that just needs a single error string (test_connection,
+    download_export). sync_product has its own handling since it needs to
+    preserve the full response shape, not just a message."""
+    fallback = _describe_http_error(e, site_url)
+    detail = _read_error_detail(e)
+    if detail and detail.strip() and detail.strip() != fallback.strip():
+        return f'{fallback} Server said: "{detail}"'
+    return fallback
+
+
 def test_connection(connection: SiteConnection, timeout: int = 15) -> dict:
     """
     Calls the /status endpoint to verify the URL, credentials, and that the
@@ -135,13 +148,7 @@ def test_connection(connection: SiteConnection, timeout: int = 15) -> dict:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             data = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as e:
-        fallback = _describe_http_error(e, connection.site_url)
-        detail = _read_error_detail(e)
-        if detail and detail.strip() and detail.strip() != fallback.strip():
-            message = f'{fallback} Server said: "{detail}"'
-        else:
-            message = fallback
-        raise SiteSyncError(message) from e
+        raise SiteSyncError(_build_http_error_message(e, connection.site_url)) from e
     except urllib.error.URLError as e:
         raise SiteSyncError(f"Could not reach {connection.site_url}: {e.reason}") from e
     except json.JSONDecodeError as e:
@@ -297,3 +304,33 @@ def sync_product(connection: SiteConnection, product: Product, timeout: int = 30
 
     data["_warnings"] = warnings
     return data
+
+
+def download_export(connection: SiteConnection, timeout: int = 120) -> bytes:
+    """
+    Fetches a CSV of every published product directly from the site (the
+    plugin's /export endpoint), in the exact same format as a manually
+    downloaded export from the WooCommerce admin page. Returns the raw CSV
+    bytes; the caller is responsible for writing it to a file and running
+    it through csv_io.import_from_csv() -- this function only handles the
+    network transfer, reusing the existing, already-tested CSV parsing
+    rather than inventing a second way to interpret product data.
+
+    A longer default timeout than test_connection()/sync_product() since
+    this can be a genuinely large response for a big catalog, not a small
+    JSON payload.
+    """
+    url = connection.base_api_url() + "/export"
+    request = urllib.request.Request(
+        url, headers={"Authorization": connection._auth_header(), "User-Agent": USER_AGENT}
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.read()
+    except urllib.error.HTTPError as e:
+        raise SiteSyncError(_build_http_error_message(e, connection.site_url)) from e
+    except urllib.error.URLError as e:
+        raise SiteSyncError(f"Could not reach {connection.site_url}: {e.reason}") from e
+    except ValueError as e:
+        raise SiteSyncError(f"\"{connection.site_url}\" doesn't look like a valid URL.") from e

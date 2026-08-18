@@ -81,7 +81,17 @@
   "variation.description": "Description",
 
   "csv.import": "Import CSV...",
+  "csv.download_from_site": "Download from Site",
+  "csv.downloading": "Downloading from site...",
   "csv.export": "Export CSV...",
+
+  "sync_all.menu_item": "Sync All to Site...",
+  "sync_all.not_configured": "Set up the site connection in Settings first, then try again.",
+  "sync_all.confirm_prompt": "This will sync all {count} product(s) to your site, one at a time. Continue?",
+  "sync_all.starting": "Starting...",
+  "sync_all.progress_label": "Syncing {index} of {total}: {sku}",
+  "sync_all.done_success": "All {count} product(s) synced successfully.",
+  "sync_all.done_with_failures": "{succeeded} product(s) synced, {failed} failed. Click \"Show Details...\" for specifics.",
   "csv.import_success": "Imported {count} product(s).",
   "csv.import_warnings_title": "Some rows were skipped",
   "csv.export_success": "Exported {count} product(s) to {path}",
@@ -109,6 +119,7 @@
   "settings.connection_success": "Connected to \"{site}\" (plugin v{version}).",
 
   "sync.not_configured": "Saved locally. To also push this product to your site, set up the connection details in Settings first.",
+  "sync.not_configured_download": "Set up the site connection in Settings first, then try downloading again.",
   "sync.in_progress": "Syncing to site...",
   "sync.error_title": "Sync Failed",
   "sync.success_title": "Synced",
