@@ -79,6 +79,32 @@ class MainWindow(QMainWindow):
         self._build_menu()
         self._refresh_list()
 
+    def closeEvent(self, event):
+        """
+        Destroying a still-running QThread out from under itself is a real
+        crash risk (Qt logs "QThread: Destroyed while thread is still
+        running" and the process can terminate uncleanly, or hang on
+        exit). Without this, closing the window mid-sync would do exactly
+        that -- the worker thread has no chance to stop first.
+        """
+        if self._sync_all_worker is not None and self._sync_all_worker.isRunning():
+            reply = QMessageBox.question(
+                self, t("sync_all.menu_item"),
+                t("sync_all.quit_confirm"),
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                event.ignore()
+                return
+            self._sync_all_worker.cancel()
+            # Give the current in-flight request a moment to actually stop
+            # rather than hanging indefinitely -- if it's still not done
+            # after this, proceed with closing anyway rather than blocking
+            # the user from quitting at all.
+            self._sync_all_worker.wait(3000)
+
+        event.accept()
+
     # ------------------------------------------------------------------ #
     # Menu
     # ------------------------------------------------------------------ #
@@ -96,8 +122,8 @@ class MainWindow(QMainWindow):
         export_action.triggered.connect(self._on_export_csv)
 
         file_menu.addSeparator()
-        sync_all_action = file_menu.addAction(t("sync_all.menu_item"))
-        sync_all_action.triggered.connect(self._on_sync_all)
+        self.sync_all_action = file_menu.addAction(t("sync_all.menu_item"))
+        self.sync_all_action.triggered.connect(self._on_sync_all)
 
         file_menu.addSeparator()
         settings_action = file_menu.addAction(t("nav.settings"))
@@ -365,6 +391,17 @@ class MainWindow(QMainWindow):
             tmp_path.unlink(missing_ok=True)
 
     def _on_sync_all(self):
+        if self._sync_all_worker is not None and self._sync_all_worker.isRunning():
+            # Guards against the menu action firing again before the
+            # previous run's finished_all has been processed -- without
+            # this, a second click would silently overwrite
+            # self._sync_all_worker, orphaning the first (still-running)
+            # thread, and the first worker's eventual finished_all would
+            # close the dialog/clear the references out from under the
+            # SECOND run instead.
+            QMessageBox.information(self, t("sync_all.menu_item"), t("sync_all.already_running"))
+            return
+
         products = self.db.list_products()
         if not products:
             QMessageBox.information(self, t("sync_all.menu_item"), t("products.empty_state"))
@@ -396,6 +433,7 @@ class MainWindow(QMainWindow):
         self._sync_all_worker.finished_all.connect(self._on_sync_all_finished)
         self._sync_all_dialog.canceled.connect(self._sync_all_worker.cancel)
 
+        self.sync_all_action.setEnabled(False)
         self._sync_all_worker.start()
 
     def _on_sync_all_progress(self, index: int, total: int, sku: str, success: bool, message: str):
@@ -405,6 +443,8 @@ class MainWindow(QMainWindow):
         self._sync_all_dialog.setValue(index)
 
     def _on_sync_all_finished(self, succeeded: int, failed: int, failure_details: list):
+        self.sync_all_action.setEnabled(True)
+
         if self._sync_all_dialog is not None:
             self._sync_all_dialog.close()
             self._sync_all_dialog = None

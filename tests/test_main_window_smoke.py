@@ -523,6 +523,188 @@ def test_sync_all_with_no_products_shows_empty_message(window, qtbot, monkeypatc
     assert len(messages) == 1
 
 
+def test_sync_all_progress_dialog_cancel_actually_stops_worker(window, qtbot, monkeypatch):
+    """Exercises the REAL QProgressDialog.cancel() path (same code path as
+    clicking the Cancel button), not just SyncAllWorker.cancel() called
+    directly -- proves the UI wiring itself works, not just the worker's
+    own cancellation logic in isolation."""
+    import json
+    import threading
+    import time
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    received_skus = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length).decode("utf-8"))
+            received_skus.append(body.get("parent_sku"))
+            time.sleep(1.0)  # generous margin so the test can reliably cancel mid-run
+            payload = json.dumps({"success": True, "product_id": 1, "counts": {}, "log": []}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        for sku in ["CX-A", "CX-B", "CX-C", "CX-D", "CX-E"]:
+            window._on_add_simple()
+            window.simple_form.sku_input.setText(sku)
+            window.simple_form.name_input.setText(sku)
+            window.simple_form.price_input.setText("10")
+            with qtbot.waitSignal(window.simple_form.saved, timeout=1000):
+                window.simple_form._on_save_clicked()
+
+        window.settings.site_url = f"http://127.0.0.1:{server.server_port}"
+        window.settings.site_username = "admin"
+        from app import credential_store
+        monkeypatch.setattr(credential_store, "load_application_password", lambda: "xxxx xxxx xxxx xxxx")
+
+        from PySide6.QtWidgets import QMessageBox
+        monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **kw: QMessageBox.Yes))
+        monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **kw: None))
+
+        window._on_sync_all()
+        qtbot.waitUntil(lambda: len(received_skus) >= 1, timeout=3000)
+
+        # QProgressDialog.cancel() only resets/hides the dialog -- it does
+        # NOT re-emit the canceled signal (per Qt's own docs: canceled()
+        # fires when the Cancel BUTTON is clicked, and is connected TO the
+        # cancel() slot by default, not the reverse). Emitting the signal
+        # directly is what actually simulates a real button click.
+        window._sync_all_dialog.canceled.emit()
+
+        qtbot.waitUntil(lambda: window._sync_all_worker is None, timeout=8000)
+        assert len(received_skus) < 5  # stopped before reaching every product
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+
+
+def test_sync_all_reentry_guard_blocks_second_call_while_running(window, qtbot, monkeypatch):
+    import json
+    import threading
+    import time
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_POST(self):
+            time.sleep(0.5)  # slow enough that the second call definitely lands mid-run
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            payload = json.dumps({"success": True, "product_id": 1, "counts": {}, "log": []}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        window._on_add_simple()
+        window.simple_form.sku_input.setText("RG-A")
+        window.simple_form.name_input.setText("RG-A")
+        window.simple_form.price_input.setText("10")
+        with qtbot.waitSignal(window.simple_form.saved, timeout=1000):
+            window.simple_form._on_save_clicked()
+
+        window.settings.site_url = f"http://127.0.0.1:{server.server_port}"
+        window.settings.site_username = "admin"
+        from app import credential_store
+        monkeypatch.setattr(credential_store, "load_application_password", lambda: "xxxx xxxx xxxx xxxx")
+
+        from PySide6.QtWidgets import QMessageBox
+        monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **kw: QMessageBox.Yes))
+        info_messages = []
+        monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **kw: info_messages.append(a)))
+
+        window._on_sync_all()
+        assert window._sync_all_worker is not None
+        first_worker = window._sync_all_worker
+
+        # Second call while the first is still mid-request must be blocked,
+        # not silently replace the running worker.
+        window._on_sync_all()
+        assert window._sync_all_worker is first_worker  # unchanged -- second call was a no-op besides the message
+        assert len(info_messages) == 1  # the "already running" notice
+
+        qtbot.waitUntil(lambda: window._sync_all_worker is None, timeout=5000)
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+
+
+def test_close_event_during_sync_asks_for_confirmation(window, qtbot, monkeypatch):
+    import json
+    import threading
+    import time
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def do_POST(self):
+            time.sleep(0.5)
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            payload = json.dumps({"success": True, "product_id": 1, "counts": {}, "log": []}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    try:
+        window._on_add_simple()
+        window.simple_form.sku_input.setText("CE-A")
+        window.simple_form.name_input.setText("CE-A")
+        window.simple_form.price_input.setText("10")
+        with qtbot.waitSignal(window.simple_form.saved, timeout=1000):
+            window.simple_form._on_save_clicked()
+
+        window.settings.site_url = f"http://127.0.0.1:{server.server_port}"
+        window.settings.site_username = "admin"
+        from app import credential_store
+        monkeypatch.setattr(credential_store, "load_application_password", lambda: "xxxx xxxx xxxx xxxx")
+
+        from PySide6.QtWidgets import QMessageBox
+        monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **kw: QMessageBox.Yes))
+        monkeypatch.setattr(QMessageBox, "information", staticmethod(lambda *a, **kw: None))
+
+        window._on_sync_all()
+        assert window._sync_all_worker is not None
+        assert window._sync_all_worker.isRunning()
+
+        from PySide6.QtGui import QCloseEvent
+        event = QCloseEvent()
+        window.closeEvent(event)  # question() is mocked to always answer Yes above
+
+        assert event.isAccepted()
+        # Worker should have been asked to cancel and given a moment to stop.
+        qtbot.waitUntil(lambda: window._sync_all_worker is None or not window._sync_all_worker.isRunning(), timeout=5000)
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+
+
 def test_download_from_site_end_to_end_against_real_server(window, qtbot, monkeypatch):
     """Full chain: Download from Site -> real HTTP server standing in for
     the WordPress site -> downloaded CSV written locally -> parsed via the

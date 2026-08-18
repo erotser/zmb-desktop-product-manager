@@ -87,7 +87,9 @@
 
   "sync_all.menu_item": "Sync All to Site...",
   "sync_all.not_configured": "Set up the site connection in Settings first, then try again.",
+  "sync_all.already_running": "A sync is already in progress -- wait for it to finish first.",
   "sync_all.confirm_prompt": "This will sync all {count} product(s) to your site, one at a time. Continue?",
+  "sync_all.quit_confirm": "A sync is still in progress. Quitting now will stop it partway through -- already-synced products stay synced, and you can just run Sync All again later to pick up the rest. Quit anyway?",
   "sync_all.starting": "Starting...",
   "sync_all.progress_label": "Syncing {index} of {total}: {sku}",
   "sync_all.done_success": "All {count} product(s) synced successfully.",

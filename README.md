@@ -1,6 +1,6 @@
 # Zombee Product Manager Desktop
 
-Version: 0.5.0
+Version: 0.5.1
 
 A Windows companion app for the Zombee Product Manager WordPress plugin.
 Manage simple and variable WooCommerce products locally with an easier
@@ -10,7 +10,7 @@ with one click.
 
 ## Status
 
-127 tests passing (pytest-qt for GUI logic, plus real local HTTP servers
+130 tests passing (pytest-qt for GUI logic, plus real local HTTP servers
 standing in for both image hosts and the WordPress site itself, rather
 than mocking network calls -- see Design notes).
 
